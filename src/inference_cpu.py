@@ -37,7 +37,13 @@ Run:
 """
 
 import sys
+import os
 from pathlib import Path
+
+# ── Windows PowerShell fix: force UTF-8 streaming output ─────────────────────
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=False)
+    sys.stderr.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -72,17 +78,25 @@ _BANNER_LORA = """
 
 
 def _check_llama_cpp():
-    """Ensures llama-cpp-python is installed."""
+    """Ensures llama-cpp-python is installed and the DLL loads correctly."""
     try:
         from llama_cpp import Llama
         return Llama
-    except ImportError:
+    except (ImportError, OSError) as e:
+        # ImportError  = package not installed
+        # OSError      = DLL/shared library failed to load (common on Windows)
+        print(f"\n[Error] Failed to load llama-cpp-python: {type(e).__name__}: {e}")
         print(
-            "\n[Error] llama-cpp-python is not installed.\n"
-            "\n  Install it:\n"
-            "    pip install -r requirements_cpu.txt\n"
-            "\n  For best speed on Ryzen 6700H (AVX2):\n"
-            "    pip install llama-cpp-python --prefer-binary   (Windows)\n"
+            "\n  Fix options (try in order):\n"
+            "\n  1. Reinstall from the AVX2-optimized wheel index:\n"
+            "       pip uninstall llama-cpp-python -y\n"
+            "       pip install llama-cpp-python "
+            "--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu\n"
+            "\n  2. If DLL error: Install Microsoft Visual C++ Redistributable:\n"
+            "       https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+            "       (then retry option 1)\n"
+            "\n  3. Diagnose the exact error:\n"
+            "       python -c \"from llama_cpp import Llama; print('OK')\"\n"
         )
         sys.exit(1)
 
