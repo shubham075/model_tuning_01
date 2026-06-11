@@ -90,9 +90,10 @@ def _run(cmd: str | list, cwd=None, env_extra: dict | None = None):
 
 
 def _pip(*packages: str):
+    """Install packages without touching torch/torchvision."""
     _run([
-        sys.executable, "-m", "pip", "install", "-q", 
-        "--upgrade", "--upgrade-strategy", "only-if-needed", 
+        sys.executable, "-m", "pip", "install", "-q",
+        "--upgrade", "--upgrade-strategy", "only-if-needed",
         *packages
     ])
 
@@ -121,11 +122,24 @@ def step1_install():
     print("\n" + "═"*60)
     print("  STEP 1 — Installing Python dependencies")
     print("═"*60)
-    _pip(
+
+    # ── Phase 1: hard-pin peft + transformers together ────────────────────────
+    # CRITICAL: Must be installed in a single pip call so pip can co-resolve
+    # their constraints.  peft<0.14 imported BloomPreTrainedModel from
+    # transformers which, in newer transformers, lazily triggers torchvision
+    # and crashes with "operator torchvision::nms does not exist".
+    # peft 0.14+ removed that import entirely — pinning here ensures we get it
+    # regardless of what Kaggle's pre-installed version is.
+    _run([
+        sys.executable, "-m", "pip", "install", "-q",
+        "peft>=0.14.0",
         "transformers>=4.45.0",
-        "accelerate>=0.34.0",
-        "peft>=0.12.0",
         "trl>=0.11.0",
+    ])
+
+    # ── Phase 2: remaining training deps (do not touch torch/torchvision) ─────
+    _pip(
+        "accelerate>=0.34.0",
         "bitsandbytes>=0.43.0",
         "datasets>=3.0.0",
         "sentencepiece>=0.2.0",
