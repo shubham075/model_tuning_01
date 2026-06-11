@@ -90,7 +90,11 @@ def _run(cmd: str | list, cwd=None, env_extra: dict | None = None):
 
 
 def _pip(*packages: str):
-    _run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", *packages])
+    _run([
+        sys.executable, "-m", "pip", "install", "-q", 
+        "--upgrade", "--upgrade-strategy", "only-if-needed", 
+        *packages
+    ])
 
 
 def _find_adapter() -> Path:
@@ -118,7 +122,6 @@ def step1_install():
     print("  STEP 1 — Installing Python dependencies")
     print("═"*60)
     _pip(
-        "torch>=2.1.0",
         "transformers>=4.45.0",
         "accelerate>=0.34.0",
         "peft>=0.12.0",
