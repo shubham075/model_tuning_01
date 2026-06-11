@@ -1,0 +1,31 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Multilingual Hindi/English/Hinglish Chatbot — Requirements
+# System: Windows, GTX 1650 Ti (4GB VRAM), Ryzen 5 4600H, 8GB RAM
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Core ML
+torch>=2.1.0          # Install CUDA version: pip install torch --index-url https://download.pytorch.org/whl/cu121
+transformers>=4.45.0
+accelerate>=0.34.0
+
+# Fine-tuning (QLoRA)
+peft>=0.12.0
+trl>=0.11.0
+bitsandbytes>=0.43.0  # Windows: pip install bitsandbytes --prefer-binary
+
+# GPTQ inference
+auto-gptq>=0.7.1      # pip install auto-gptq --extra-index-url https://huggingface.github.io/autogptq-index/whl/cu121/
+optimum>=1.23.0
+
+# Data
+datasets>=3.0.0
+sentencepiece>=0.2.0
+huggingface-hub>=0.25.0
+
+# Text utilities
+numpy>=1.26.0
+scipy>=1.13.0
+tqdm>=4.66.0
+
+# Optional: faster tokenization
+tokenizers>=0.20.0

@@ -1,0 +1,22 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# requirements_cpu.txt — CPU-only inference (no GPU, no CUDA needed)
+#
+# After Kaggle training, install ONLY these packages to run the chatbot
+# on any machine with 8GB+ RAM and a modern CPU (AVX2 support).
+#
+# Install:
+#   pip install -r requirements_cpu.txt
+#
+# For faster inference on CPUs with AVX2 (Ryzen 6700H, Intel 10th gen+):
+#   CMAKE_ARGS="-DGGML_AVX2=on" pip install llama-cpp-python --no-cache-dir
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Core: CPU inference engine (GGUF format)
+# llama-cpp-python runs Qwen2.5 GGUF Q4_K_M at ~5-15 tokens/sec on Ryzen 6700H
+llama-cpp-python>=0.2.90
+
+# Model download from HuggingFace Hub
+huggingface-hub>=0.25.0
+
+# Utilities
+tqdm>=4.66.0

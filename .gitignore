@@ -1,0 +1,10 @@
+generativeAI/
+.env
+__pycache__/
+checkpoints/
+data/raw/
+data/processed/
+onnx/
+logs/
+models/
+data/
