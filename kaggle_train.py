@@ -123,17 +123,18 @@ def step1_install():
     print("  STEP 1 — Installing Python dependencies")
     print("═"*60)
 
-    # ── Phase 1: hard-pin peft + transformers together ────────────────────────
-    # CRITICAL: Must be installed in a single pip call so pip can co-resolve
-    # their constraints.  peft<0.14 imported BloomPreTrainedModel from
-    # transformers which, in newer transformers, lazily triggers torchvision
-    # and crashes with "operator torchvision::nms does not exist".
-    # peft 0.14+ removed that import entirely — pinning here ensures we get it
-    # regardless of what Kaggle's pre-installed version is.
+    # ── Phase 1: co-resolve the tightly coupled core libs ────────────────────
+    # All four packages have strict inter-version constraints that MUST be
+    # resolved in a single pip call:
+    #   • peft>=0.14.0       — removes BloomPreTrainedModel import (fixes torchvision crash)
+    #   • transformers       — requires tokenizers >=0.22.0, <=0.23.0
+    #   • tokenizers pinned  — Phase 2 alone would upgrade it to 0.23.1+, breaking transformers
+    #   • trl                — depends on both peft and transformers
     _run([
         sys.executable, "-m", "pip", "install", "-q",
         "peft>=0.14.0",
         "transformers>=4.45.0",
+        "tokenizers>=0.20.0,<=0.23.0",
         "trl>=0.11.0",
     ])
 
@@ -144,7 +145,6 @@ def step1_install():
         "datasets>=3.0.0",
         "sentencepiece>=0.2.0",
         "huggingface-hub>=0.25.0",
-        "tokenizers>=0.20.0",
         "scipy>=1.13.0",
         "tqdm>=4.66.0",
     )
