@@ -74,7 +74,3 @@ python chatbot_multilingual.py --mode cpu_chat --base_gguf ./models/qwen2.5-3b-i
 It will work in Hindi, English, and Hinglish right now. The only difference from the fine-tuned version is that it hasn't been trained on your specific dataset yet. After Kaggle training, you'll add `--lora_gguf` to make it better.
 
 > **Note:** First load takes ~15–30 seconds. Then you'll see the chat prompt.
-
-<!-- os.environ["HF_TOKEN"]   = "HF_TOKEN_REMOVED"  -->
-<!-- os.environ["HF_REPO"]    = "shubham075/qwen25-multilingual-lora"  # your HF repo name -->
-<!-- os.environ["GITHUB_URL"] = "https://github.com/shubham075/model_tuning_01"  # ← your actual repo -->
