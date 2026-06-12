@@ -53,17 +53,42 @@ def _bnb_4bit_config() -> BitsAndBytesConfig:
 # ─── Training ─────────────────────────────────────────────────────────────────
 
 def load_for_training():
-    """Returns (model, tokenizer) ready for QLoRA fine-tuning."""
-    print(f"[Model] Loading {BASE_MODEL_ID} in 4-bit for QLoRA...")
+    """Returns (model, tokenizer) ready for fine-tuning."""
     tokenizer = load_tokenizer(BASE_MODEL_ID)
-    model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_ID,
-        quantization_config=_bnb_4bit_config(),
-        device_map="auto",
-        trust_remote_code=True,
-        torch_dtype=torch.float16,
-    )
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+
+    use_quantization = True
+    if torch.cuda.is_available():
+        # Pascal architecture (P100, GTX 1080 Ti, etc.) has compute capability 6.x.
+        # Turing (T4) is 7.5, Ampere (A100) is 8.x.
+        major, minor = torch.cuda.get_device_capability(0)
+        if major < 7:
+            print(f"[Model] Detected Pascal GPU ({torch.cuda.get_device_name(0)}).")
+            print("        Skipping 4-bit quantization to prevent bitsandbytes errors.")
+            print("        P100 has 16GB VRAM, which is sufficient for standard 16-bit LoRA.")
+            use_quantization = False
+
+    if use_quantization:
+        print(f"[Model] Loading {BASE_MODEL_ID} in 4-bit for QLoRA...")
+        model = AutoModelForCausalLM.from_pretrained(
+            BASE_MODEL_ID,
+            quantization_config=_bnb_4bit_config(),
+            device_map="auto",
+            trust_remote_code=True,
+            torch_dtype=torch.float16,
+        )
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    else:
+        print(f"[Model] Loading {BASE_MODEL_ID} in FP16 for standard LoRA...")
+        model = AutoModelForCausalLM.from_pretrained(
+            BASE_MODEL_ID,
+            device_map="auto",
+            trust_remote_code=True,
+            torch_dtype=torch.float16,
+        )
+        # Enable gradient checkpointing and input gradients requirement for training
+        model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
+
     lora_cfg = LoraConfig(
         r=LORA_R, lora_alpha=LORA_ALPHA,
         target_modules=LORA_TARGET_MODULES,
@@ -101,18 +126,33 @@ def load_for_inference(lora_adapter_path: str | None = None):
     Returns (model, tokenizer). Tries strategies in order with full output.
     Will never silently exit.
     """
+    use_quantization = True
+    if torch.cuda.is_available():
+        major, minor = torch.cuda.get_device_capability(0)
+        if major < 7:
+            print(f"[Model] Detected Pascal GPU ({torch.cuda.get_device_name(0)}).")
+            print("        Using FP16 for base + LoRA loading and skipping standalone 4-bit.")
+            use_quantization = False
 
     # S0 — LoRA adapter over base (only after fine-tuning)
     if lora_adapter_path and Path(lora_adapter_path).exists():
         def _lora():
             tokenizer = load_tokenizer(BASE_MODEL_ID)
-            base = AutoModelForCausalLM.from_pretrained(
-                BASE_MODEL_ID,
-                quantization_config=_bnb_4bit_config(),
-                device_map="auto",
-                trust_remote_code=True,
-                torch_dtype=torch.float16,
-            )
+            if use_quantization:
+                base = AutoModelForCausalLM.from_pretrained(
+                    BASE_MODEL_ID,
+                    quantization_config=_bnb_4bit_config(),
+                    device_map="auto",
+                    trust_remote_code=True,
+                    torch_dtype=torch.float16,
+                )
+            else:
+                base = AutoModelForCausalLM.from_pretrained(
+                    BASE_MODEL_ID,
+                    device_map="auto",
+                    trust_remote_code=True,
+                    torch_dtype=torch.float16,
+                )
             model = PeftModel.from_pretrained(base, lora_adapter_path)
             model.eval()
             return model, tokenizer
@@ -137,21 +177,22 @@ def load_for_inference(lora_adapter_path: str | None = None):
     # ─────────────────────────────────────────────────────────────────────────
 
     # S1 — Base model 4-bit via bitsandbytes (~2GB VRAM)  [confirmed working]
-    def _bnb4bit():
-        tokenizer = load_tokenizer(BASE_MODEL_ID)
-        model = AutoModelForCausalLM.from_pretrained(
-            BASE_MODEL_ID,
-            quantization_config=_bnb_4bit_config(),
-            device_map="auto",
-            trust_remote_code=True,
-            torch_dtype=torch.float16,
-        )
-        model.eval()
-        return model, tokenizer
+    if use_quantization:
+        def _bnb4bit():
+            tokenizer = load_tokenizer(BASE_MODEL_ID)
+            model = AutoModelForCausalLM.from_pretrained(
+                BASE_MODEL_ID,
+                quantization_config=_bnb_4bit_config(),
+                device_map="auto",
+                trust_remote_code=True,
+                torch_dtype=torch.float16,
+            )
+            model.eval()
+            return model, tokenizer
 
-    r = _try_load(f"3B 4-bit BnB ({BASE_MODEL_ID})", _bnb4bit)
-    if r:
-        return r
+        r = _try_load(f"3B 4-bit BnB ({BASE_MODEL_ID})", _bnb4bit)
+        if r:
+            return r
 
     # S2 — Base model FP16 split GPU+CPU (no quantization lib needed)
     def _fp16_split():
