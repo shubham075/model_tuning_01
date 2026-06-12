@@ -172,3 +172,22 @@ CPU_N_CTX = 4096    # longer memory (uses ~200 MB extra RAM)
 | Slow inference (<3 tok/s) | Set `CPU_N_THREADS` to physical cores (6 for Ryzen 6700H) |
 | OOM on Kaggle during merge | Restart session, run with `--start_from 5` |
 | GGUF push to HF fails | Check `--hf_token` has **write** permissions |
+
+
+# Download kaggle_train.py from your GitHub repo
+!wget https://raw.githubusercontent.com/shubham075/model_tuning_01/main/kaggle_train.py
+!ls  # confirm it's there
+
+
+
+import os
+os.environ["HF_TOKEN"]   = "HF_TOKEN_REMOVED" 
+os.environ["HF_REPO"]    = "shubham075/qwen25-multilingual-lora"  # your HF repo name
+os.environ["GITHUB_URL"] = "https://github.com/shubham075/model_tuning_01"  # ← your actual repo
+
+
+
+!python kaggle_train.py \
+    --hf_token  "$HF_TOKEN" \
+    --hf_repo   "$HF_REPO" \
+    --github_url "$GITHUB_URL"
