@@ -1,0 +1,97 @@
+Yes, you can! Here's a complete breakdown of how pausing and resuming works — both what Kaggle supports natively and what your pipeline already has built in.
+
+---
+
+## How Kaggle Training Sessions Work
+
+**Kaggle GPU sessions have a 12-hour limit** (9 hours for free tier). Your training is **not paused** — if the session dies mid-training, it stops. But you can **resume from the last saved checkpoint** when you start a new session.
+
+---
+
+## Your Pipeline Already Supports This
+
+Your `kaggle_train.py` has a `--start_from N` argument for exactly this purpose.
+
+### Step 1 — Save Checkpoints During Training
+
+Your `src/train.py` already saves checkpoints periodically via `save_steps`. When training stops (session timeout or manual stop), the last checkpoint is preserved in `/kaggle/working/checkpoints/`.
+
+> **⚠️ Critical**: Kaggle's `/kaggle/working/` directory is **wiped when the session ends** unless you save the output. Before your session times out, you MUST save your checkpoints.
+
+---
+
+## How to Pause and Resume
+
+### When Pausing (before session ends):
+
+**Option A — Save output as a Kaggle Dataset (recommended):**
+Run this cell in your notebook before stopping:
+```python
+# In a Kaggle notebook cell — run this to persist checkpoints
+import shutil, os
+
+# Zip the checkpoints folder
+shutil.make_archive('/kaggle/working/checkpoints_backup', 'zip', '/kaggle/working/checkpoints')
+print("Backup created! Now go to: Data → Add Output → Save Version")
+```
+Then click **Save Version** in Kaggle's top-right menu. This commits `/kaggle/working/` as output that persists.
+
+**Option B — Push checkpoint to HuggingFace Hub:**
+```python
+# Run this cell to push your latest checkpoint to HF Hub before stopping
+from huggingface_hub import HfApi
+import os
+
+api = HfApi()
+api.upload_folder(
+    folder_path="/kaggle/working/checkpoints",
+    repo_id="your-username/your-repo-name",   # ← your HF repo
+    repo_type="model",
+    token=os.environ["HF_TOKEN"],
+)
+print("Checkpoints pushed to HuggingFace!")
+```
+
+---
+
+### When Resuming (new session):
+
+**If you used Option B (HF Hub):**
+```python
+# In a new Kaggle session — restore checkpoints from HF Hub
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="your-username/your-repo-name",
+    local_dir="/kaggle/working/checkpoints",
+    repo_type="model",
+    token="hf_YOUR_TOKEN",
+)
+print("Checkpoints restored!")
+```
+
+**Then skip already-completed steps** using `--start_from`:
+```python
+# Skip Steps 1-3, resume from Step 4 (training)
+!python kaggle_train.py \
+    --hf_token  "$HF_TOKEN" \
+    --hf_repo   "$HF_REPO" \
+    --github_url "$GITHUB_URL" \
+    --start_from 4
+```
+
+Your `src/train.py` with HuggingFace `Trainer` **automatically detects and resumes from the latest checkpoint** in `CHECKPOINTS_DIR` — no extra code needed.
+
+---
+
+## Summary Table
+
+| Scenario | What to do |
+|---|---|
+| Session about to timeout | Push checkpoints to HF Hub OR Save Kaggle Version |
+| Want to stop manually | Same as above |
+| Resuming in new session | Restore checkpoints → run with `--start_from 4` |
+| Training already completed Step 3 | Run with `--start_from 4` |
+| Training already completed Steps 1-4 | Run with `--start_from 5` |
+
+> **💡 Tip**: Always monitor your Kaggle session time. Set a timer for ~10.5 hours if you have a 12-hour session, and manually trigger the checkpoint save before it expires.
