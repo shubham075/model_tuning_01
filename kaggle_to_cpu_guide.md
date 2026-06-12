@@ -181,9 +181,9 @@ CPU_N_CTX = 4096    # longer memory (uses ~200 MB extra RAM)
 
 
 import os
-os.environ["HF_TOKEN"]   = "HF_TOKEN_REMOVED" 
-os.environ["HF_REPO"]    = "shubham075/qwen25-multilingual-lora"  # your HF repo name
-os.environ["GITHUB_URL"] = "https://github.com/shubham075/model_tuning_01"  # ← your actual repo
+<!-- os.environ["HF_TOKEN"]   = "HF_TOKEN_REMOVED"  -->
+<!-- os.environ["HF_REPO"]    = "shubham075/qwen25-multilingual-lora"  # your HF repo name -->
+<!-- os.environ["GITHUB_URL"] = "https://github.com/shubham075/model_tuning_01"  # ← your actual repo -->
 
 
 
