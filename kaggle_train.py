@@ -136,11 +136,12 @@ HARDWARE: str = _detect_hw()   # 'tpu' or 'gpu' — used throughout this script
 
 # ─── Hardware-specific training overrides ────────────────────────────────────
 if HARDWARE == 'tpu':
-    # 8 chips × 16 GB HBM = 128 GB total. Full model fits in bf16, no QLoRA needed.
-    # Effective batch = 8 cores × 16 per-core = 128 per gradient update.
+    # TPU v5e core has 16 GB HBM. In single-process mode, we use 1 core.
+    # To fit within memory constraints while keeping a 128 effective batch size,
+    # we use batch size 2 with 64 gradient accumulation steps (2 * 64 = 128).
     KAGGLE_ENV = {
-        "KAGGLE_BATCH_SIZE": "16",          # Per-core (8 × 16 = 128 total)
-        "KAGGLE_GRAD_ACCUM": "1",           # No accumulation needed
+        "KAGGLE_BATCH_SIZE": "2",           # Lower to fit in 16GB HBM
+        "KAGGLE_GRAD_ACCUM": "64",          # Accumulate to reach 128 effective batch size
         "KAGGLE_OPTIM":      "adamw_torch", # paged_adamw_8bit is CUDA-only
         "KAGGLE_BF16":       "true",
         "KAGGLE_EPOCHS":     "3",
