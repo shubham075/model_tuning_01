@@ -81,14 +81,27 @@ def _detect_hw() -> str:
     Detects available training hardware. Checks TPU first, then GPU.
     Returns: 'tpu' | 'gpu'
     Raises RuntimeError if neither is available.
+
+    NOTE: We check environment variables and package importability instead
+    of calling xm.xla_device(). Calling xla_device() initializes the TPU
+    in the parent process, locking the device file (/dev/vfio/1) and causing
+    subprocesses/spawned children to fail with 'Device or resource busy'.
     """
-    # 1. Check TPU first (torch_xla is pre-installed on Kaggle TPU)
-    try:
-        import torch_xla.core.xla_model as xm
-        xm.xla_device()          # raises if no TPU is actually present
-        print("[HW] ✓ TPU v5e-8 detected (torch_xla)")
+    # 1. Check TPU first via environment variables or torch_xla presence
+    is_tpu_env = (
+        os.environ.get("TPU_NAME") is not None or
+        os.environ.get("TPU_ACCELERATOR_TYPE") is not None or
+        os.environ.get("XRT_TPU_CONFIG") is not None
+    )
+    if is_tpu_env:
+        print("[HW] ✓ TPU environment detected (env vars)")
         return 'tpu'
-    except Exception:
+
+    try:
+        import torch_xla  # noqa
+        print("[HW] ✓ TPU environment detected (torch_xla available)")
+        return 'tpu'
+    except ImportError:
         pass
 
     # 2. Check for CUDA GPU
@@ -352,28 +365,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# PJRT / SPMD single-process training for Kaggle TPU v5e-8
-# ─────────────────────────────────────────────────────────
-# Kaggle TPU v5e-8 uses the PJRT backend in SPMD (Single Program Multiple Data)
-# mode. SPMD means ONE Python process controls all 8 chips simultaneously via
-# automatic tensor sharding — it is NOT 8 separate processes.
-#
-# xmp.spawn() is the OLD XRT API designed for 1 process per chip (v2/v3 TPUs).
-# On PJRT it always crashes with "Expected 8 worker addresses, got 1" because
-# PJRT does not expose per-chip OS-level worker processes to user code.
-#
-# The correct approach: run a single process, set PJRT_DEVICE=TPU, and let the
-# HuggingFace Trainer route tensors through the XLA device. PJRT handles all
-# internal chip communication transparently.
+# Apply config patch in the parent launcher process before fork
+import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
 
-os.environ.setdefault('PJRT_DEVICE', 'TPU')  # ensure PJRT picks up TPU
-os.environ.setdefault('XLA_USE_BF16', '1')    # native BF16 on v5e chips
+def _mp_fn(rank):
+    from train import main
+    main()
 
-import _kaggle_config_patch  # sets BF16, batch size, etc.
-
-print("[Launcher] TPU v5e-8 (PJRT/SPMD): single-process mode — all chips via SPMD sharding")
-from train import main
-main()
+# With parent process not initializing the TPU device, xmp.spawn with
+# start_method='fork' works perfectly to spin up child workers on all 8 TPU cores.
+try:
+    import torch_xla.distributed.xla_multiprocessing as xmp
+    print("[Launcher] TPU: starting 8-core distributed training via xmp.spawn...")
+    xmp.spawn(_mp_fn, nprocs=None, start_method='fork')
+except ImportError:
+    print("[Launcher] torch_xla not found — falling back to single-process mode.")
+    from train import main
+    main()
 """
     else:  # gpu
         launcher_content = """import sys
