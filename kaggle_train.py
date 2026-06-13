@@ -446,7 +446,7 @@ def step5_convert_lora_to_gguf():
 
     req_file = LLAMA_CPP_DIR / "requirements.txt"
     if req_file.exists():
-        _pip(f"-r {req_file}")
+        _pip("-r", str(req_file))
 
     # ── 5b. Convert PEFT LoRA → GGUF LoRA ────────────────────────────────────
     # llama.cpp's convert_lora_to_gguf.py converts HuggingFace PEFT adapter
