@@ -340,31 +340,38 @@ print("[KagglePatch] ✓ GPU (T4) config applied (fp16, QLoRA, batch=4×4 grad_a
     launcher = REPO_DIR / "_kaggle_train_launcher.py"
 
     if HARDWARE == 'tpu':
-        launcher_content = """import sys
+        launcher_content = """import sys, os
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# _mp_fn must be defined at module level so it is picklable by spawn workers
+# Apply config patch in the PARENT process before fork.
+# Forked children inherit the already-patched config — no need to re-import.
+import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
+
+# _mp_fn defined at module level (required for pickling, also good for fork)
 def _mp_fn(rank):
-    # Apply config patch INSIDE the worker — each spawned child needs it
-    import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
     from train import main
     main()
 
-if __name__ == '__main__':
-    # if __name__ == '__main__' guard is REQUIRED with start_method='spawn'.
-    # Without it, every spawned child re-imports this file and calls xmp.spawn
-    # again, causing a recursive BrokenProcessPool crash.
-    try:
-        import torch_xla.distributed.xla_multiprocessing as xmp
-        print("[Launcher] TPU: starting training via xmp.spawn (nprocs=None = all TPU cores)...")
-        xmp.spawn(_mp_fn, nprocs=None, start_method='spawn')
-    except ImportError:
-        print("[Launcher] torch_xla not found — falling back to single-process mode.")
-        import _kaggle_config_patch  # noqa
-        from train import main
-        main()
+# WHY fork (not spawn) on Kaggle TPU v5e-8 / PJRT:
+#   - Kaggle PJRT exposes 1 TPU worker address to Python; 8 chips are managed
+#     internally by the PJRT runtime, not as 8 OS-level workers.
+#   - start_method='spawn' creates fresh interpreters that each try to open
+#     their own TPU connection → "Expected 8 worker addresses, got 1" crash.
+#   - start_method='fork' inherits the parent's already-initialized PJRT client
+#     and correctly distributes across all 8 chips.
+#   - nprocs=None tells PJRT to auto-detect available devices (8 on v5e-8).
+#   - Google/PyTorch XLA docs confirm fork is the recommended method for
+#     Kaggle and Colab notebook environments.
+try:
+    import torch_xla.distributed.xla_multiprocessing as xmp
+    print("[Launcher] TPU: xmp.spawn(nprocs=None, start_method='fork') — all 8 chips...")
+    xmp.spawn(_mp_fn, nprocs=None, start_method='fork')
+except ImportError:
+    print("[Launcher] torch_xla not found — falling back to single-process mode.")
+    from train import main
+    main()
 """
     else:  # gpu
         launcher_content = """import sys
