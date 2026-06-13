@@ -75,7 +75,6 @@ def get_training_args() -> TrainingArguments:
         gradient_checkpointing=True,
         fp16=FP16_TRAINING and not ON_TPU,  # FP16 on CUDA GPU only
         bf16=BF16_TRAINING or ON_TPU,       # BF16 on TPU (native) or if explicitly set
-        no_cuda=ON_TPU,                     # Prevent Trainer from touching CUDA on TPU
         optim=optim,
         dataloader_pin_memory=False,        # Required for TPU; harmless on GPU
 

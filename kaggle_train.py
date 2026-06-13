@@ -139,7 +139,6 @@ if HARDWARE == 'tpu':
     # 8 chips × 16 GB HBM = 128 GB total. Full model fits in bf16, no QLoRA needed.
     # Effective batch = 8 cores × 16 per-core = 128 per gradient update.
     KAGGLE_ENV = {
-        "XLA_USE_BF16":      "1",           # Native BF16 on TPU
         "KAGGLE_BATCH_SIZE": "16",          # Per-core (8 × 16 = 128 total)
         "KAGGLE_GRAD_ACCUM": "1",           # No accumulation needed
         "KAGGLE_OPTIM":      "adamw_torch", # paged_adamw_8bit is CUDA-only
