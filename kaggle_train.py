@@ -373,27 +373,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# Unset TPU_PROCESS_ADDRESSES so PJRT initializes in single-host mode.
-# Otherwise, it expects multiple hosts and crashes with "Expected 8 worker addresses, got 1".
+# Unset conflicting multi-host environment variables to ensure PJRT local mode
 os.environ.pop("TPU_PROCESS_ADDRESSES", None)
+os.environ.pop("CLOUD_TPU_TASK_ID", None)
 
-# Apply config patch in the parent launcher process before fork
+# Apply config patch before train imports config
 import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
 
-def _mp_fn(rank):
-    from train import main
-    main()
-
-# With parent process not initializing the TPU device, xmp.spawn with
-# start_method='fork' works perfectly to spin up child workers on all 8 TPU cores.
-try:
-    import torch_xla.distributed.xla_multiprocessing as xmp
-    print("[Launcher] TPU: starting 8-core distributed training via xmp.spawn...")
-    xmp.spawn(_mp_fn, nprocs=None, start_method='fork')
-except ImportError:
-    print("[Launcher] torch_xla not found — falling back to single-process mode.")
-    from train import main
-    main()
+from train import main
+main()
 """
     else:  # gpu
         launcher_content = """import sys
@@ -410,11 +398,19 @@ main()
 
     launcher.write_text(launcher_content, encoding="utf-8")
 
-    _run(
-        [sys.executable, "_kaggle_train_launcher.py"],
-        cwd=REPO_DIR,
-        env_extra=KAGGLE_ENV,
-    )
+    if HARDWARE == 'tpu':
+        print("[Step 4] Launching 8-core distributed training via torchrun (torch.distributed.run)...")
+        _run(
+            [sys.executable, "-m", "torch.distributed.run", "--nproc_per_node=8", "_kaggle_train_launcher.py"],
+            cwd=REPO_DIR,
+            env_extra=KAGGLE_ENV,
+        )
+    else:
+        _run(
+            [sys.executable, "_kaggle_train_launcher.py"],
+            cwd=REPO_DIR,
+            env_extra=KAGGLE_ENV,
+        )
     print("[Step 4] ✓ Training complete — LoRA adapters saved")
 
 
