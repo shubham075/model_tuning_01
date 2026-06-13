@@ -354,8 +354,11 @@ try:
         from train import main
         main()
 
-    print("[Launcher] TPU: starting training across 8 cores via xmp.spawn...")
-    xmp.spawn(_mp_fn, nprocs=8, start_method='fork')
+    # nprocs=None  → PJRT auto-detects all available TPU devices (8 on v5e-8)
+    # nprocs=8 is rejected by the PJRT backend (ValueError: Unsupported nprocs)
+    # start_method='spawn' is required by PJRT; 'fork' is unsafe with XLA runtime
+    print("[Launcher] TPU: starting training via xmp.spawn (nprocs=None = all cores)...")
+    xmp.spawn(_mp_fn, nprocs=None, start_method='spawn')
 
 except ImportError:
     print("[Launcher] torch_xla not found — falling back to single-process mode.")
