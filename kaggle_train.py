@@ -373,9 +373,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# Unset conflicting multi-host environment variables to ensure PJRT local mode
-os.environ.pop("TPU_PROCESS_ADDRESSES", None)
-os.environ.pop("CLOUD_TPU_TASK_ID", None)
+# Map CLOUD_TPU_TASK_ID to the rank assigned by torchrun
+# and define the 8 local ports in TPU_PROCESS_ADDRESSES to prevent port conflicts.
+os.environ["CLOUD_TPU_TASK_ID"] = os.environ.get("LOCAL_RANK", "0")
+os.environ["TPU_PROCESS_ADDRESSES"] = ",".join(f"127.0.0.1:{8476 + i}" for i in range(8))
+os.environ["PJRT_DEVICE"] = "TPU"
 
 # Apply config patch before train imports config
 import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
