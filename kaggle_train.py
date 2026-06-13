@@ -345,33 +345,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# Apply config patch in the PARENT process before fork.
-# Forked children inherit the already-patched config — no need to re-import.
-import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
+# PJRT / SPMD single-process training for Kaggle TPU v5e-8
+# ─────────────────────────────────────────────────────────
+# Kaggle TPU v5e-8 uses the PJRT backend in SPMD (Single Program Multiple Data)
+# mode. SPMD means ONE Python process controls all 8 chips simultaneously via
+# automatic tensor sharding — it is NOT 8 separate processes.
+#
+# xmp.spawn() is the OLD XRT API designed for 1 process per chip (v2/v3 TPUs).
+# On PJRT it always crashes with "Expected 8 worker addresses, got 1" because
+# PJRT does not expose per-chip OS-level worker processes to user code.
+#
+# The correct approach: run a single process, set PJRT_DEVICE=TPU, and let the
+# HuggingFace Trainer route tensors through the XLA device. PJRT handles all
+# internal chip communication transparently.
 
-# _mp_fn defined at module level (required for pickling, also good for fork)
-def _mp_fn(rank):
-    from train import main
-    main()
+os.environ.setdefault('PJRT_DEVICE', 'TPU')  # ensure PJRT picks up TPU
+os.environ.setdefault('XLA_USE_BF16', '1')    # native BF16 on v5e chips
 
-# WHY fork (not spawn) on Kaggle TPU v5e-8 / PJRT:
-#   - Kaggle PJRT exposes 1 TPU worker address to Python; 8 chips are managed
-#     internally by the PJRT runtime, not as 8 OS-level workers.
-#   - start_method='spawn' creates fresh interpreters that each try to open
-#     their own TPU connection → "Expected 8 worker addresses, got 1" crash.
-#   - start_method='fork' inherits the parent's already-initialized PJRT client
-#     and correctly distributes across all 8 chips.
-#   - nprocs=None tells PJRT to auto-detect available devices (8 on v5e-8).
-#   - Google/PyTorch XLA docs confirm fork is the recommended method for
-#     Kaggle and Colab notebook environments.
-try:
-    import torch_xla.distributed.xla_multiprocessing as xmp
-    print("[Launcher] TPU: xmp.spawn(nprocs=None, start_method='fork') — all 8 chips...")
-    xmp.spawn(_mp_fn, nprocs=None, start_method='fork')
-except ImportError:
-    print("[Launcher] torch_xla not found — falling back to single-process mode.")
-    from train import main
-    main()
+import _kaggle_config_patch  # sets BF16, batch size, etc.
+
+print("[Launcher] TPU v5e-8 (PJRT/SPMD): single-process mode — all chips via SPMD sharding")
+from train import main
+main()
 """
     else:  # gpu
         launcher_content = """import sys

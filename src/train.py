@@ -38,12 +38,21 @@ from transformers import Trainer, TrainingArguments, EarlyStoppingCallback
 # ─── Hardware Detection ─────────────────────────────────────────────────────────────
 
 def _is_tpu() -> bool:
-    """Returns True if running on a Kaggle TPU (torch_xla available)."""
+    """
+    Returns True when running on a Kaggle TPU v5e-8 (PJRT backend).
+
+    Intentionally does NOT call xm.xla_device() here — doing so at module
+    import time triggers PJRT initialization before the env is set up,
+    which can cause 'Expected 8 worker addresses, got 1' on v5e-8.
+
+    Instead, we check:
+      1. torch_xla is importable (pre-installed on Kaggle TPU notebooks)
+      2. PJRT_DEVICE=TPU is set (we set this in _kaggle_train_launcher.py)
+    """
     try:
-        import torch_xla.core.xla_model as xm
-        xm.xla_device()
-        return True
-    except Exception:
+        import torch_xla  # noqa — just check availability, don't init
+        return os.environ.get("PJRT_DEVICE", "").upper() == "TPU"
+    except ImportError:
         return False
 
 ON_TPU: bool = _is_tpu()

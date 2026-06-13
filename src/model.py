@@ -34,16 +34,21 @@ SMALL_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 def _detect_hardware() -> str:
     """
     Returns one of: 'tpu' | 'gpu_modern' | 'gpu_pascal' | 'cpu'
-    - tpu        : Kaggle TPU v5e-8 (torch_xla available)
+    - tpu        : Kaggle TPU v5e-8 (PJRT backend, PJRT_DEVICE=TPU in env)
     - gpu_modern : Turing+ GPU (compute ≥7.0, e.g. T4, A100) → QLoRA ok
     - gpu_pascal : Pascal GPU  (compute <7.0, e.g. P100)     → FP16 LoRA only
     - cpu        : No accelerator found
+
+    NOTE: We check PJRT_DEVICE env var instead of calling xm.xla_device().
+    Calling xla_device() at import time triggers PJRT initialization before
+    the environment is fully configured, causing the 'Expected 8 worker
+    addresses, got 1' crash on v5e-8.
     """
     try:
-        import torch_xla.core.xla_model as xm
-        xm.xla_device()   # raises if no TPU present
-        return 'tpu'
-    except Exception:
+        import torch_xla  # noqa — just check importability, don't init
+        if __import__('os').environ.get('PJRT_DEVICE', '').upper() == 'TPU':
+            return 'tpu'
+    except ImportError:
         pass
 
     if torch.cuda.is_available():
