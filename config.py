@@ -61,10 +61,10 @@ FP16_TRAINING           = True   # Local GPU (GTX 1650 Ti / T4); TPU patch → F
 BF16_TRAINING           = False  # TPU v5e-8 native format; Kaggle TPU patch → True
 
 # ─── Dataset Limits (adjust based on available time) ─────────────────────────
-MAX_ENGLISH_SAMPLES  = 8_000   # From ultrachat_200k
-MAX_HINDI_SAMPLES    = 5_000   # From IITB parallel corpus (formatted as chat)
-MAX_HINGLISH_SAMPLES = 3_000   # Synthetic generation
-MAX_EVAL_SAMPLES     = 400     # Total across all languages
+MAX_ENGLISH_SAMPLES  = 4_000   # From ultrachat_200k
+MAX_HINDI_SAMPLES    = 2_500   # From IITB parallel corpus (formatted as chat)
+MAX_HINGLISH_SAMPLES = 1_500   # Synthetic generation
+MAX_EVAL_SAMPLES     = 200     # Total across all languages
 
 # ─── Inference Parameters ────────────────────────────────────────────────────
 MAX_NEW_TOKENS      = 256
