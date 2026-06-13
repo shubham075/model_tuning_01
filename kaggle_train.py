@@ -373,11 +373,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# Map CLOUD_TPU_TASK_ID to the rank assigned by torchrun
-# and define the 8 local ports in TPU_PROCESS_ADDRESSES to prevent port conflicts.
-os.environ["CLOUD_TPU_TASK_ID"] = os.environ.get("LOCAL_RANK", "0")
-os.environ["TPU_PROCESS_ADDRESSES"] = ",".join(f"127.0.0.1:{8476 + i}" for i in range(8))
+# Enable PyTorch/XLA SPMD execution mode (Single-Process Multiple Data)
+import torch_xla.runtime as xr
+xr.use_spmd()
+
+# Force PJRT device to TPU and enforce local single-process topology
 os.environ["PJRT_DEVICE"] = "TPU"
+os.environ["TPU_PROCESS_ADDRESSES"] = "local"
+os.environ.pop("CLOUD_TPU_TASK_ID", None)
 
 # Apply config patch before train imports config
 import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
@@ -401,18 +404,15 @@ main()
     launcher.write_text(launcher_content, encoding="utf-8")
 
     if HARDWARE == 'tpu':
-        print("[Step 4] Launching 8-core distributed training via torchrun (torch.distributed.run)...")
-        _run(
-            [sys.executable, "-m", "torch.distributed.run", "--nproc_per_node=8", "_kaggle_train_launcher.py"],
-            cwd=REPO_DIR,
-            env_extra=KAGGLE_ENV,
-        )
+        print("[Step 4] Launching training in SPMD single-process mode (all chips controlled by 1 process)...")
     else:
-        _run(
-            [sys.executable, "_kaggle_train_launcher.py"],
-            cwd=REPO_DIR,
-            env_extra=KAGGLE_ENV,
-        )
+        print("[Step 4] Launching GPU training in single-process mode...")
+
+    _run(
+        [sys.executable, "_kaggle_train_launcher.py"],
+        cwd=REPO_DIR,
+        env_extra=KAGGLE_ENV,
+    )
     print("[Step 4] ✓ Training complete — LoRA adapters saved")
 
 
