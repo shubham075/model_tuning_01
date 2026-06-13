@@ -74,17 +74,66 @@ LLAMA_CPP_DIR  = Path("/tmp/llama.cpp")
 BASE_GGUF_REPO     = "Qwen/Qwen2.5-3B-Instruct-GGUF"
 BASE_GGUF_FILENAME = "qwen2.5-3b-instruct-q4_k_m.gguf"   # ~2 GB
 
-# ─── TPU v5e-8 optimised training overrides ──────────────────────────────────
-# 8 chips × 16 GB HBM = 128 GB total. No QLoRA needed — full model fits in bf16.
-# Effective batch = 8 cores × KAGGLE_BATCH_SIZE (128 total with default 16).
-KAGGLE_ENV = {
-    "XLA_USE_BF16":      "1",           # Enable native BF16 on TPU
-    "KAGGLE_BATCH_SIZE": "16",          # Per-core batch (8 cores × 16 = 128 total)
-    "KAGGLE_GRAD_ACCUM": "1",           # No accumulation needed on TPU
-    "KAGGLE_OPTIM":      "adamw_torch", # paged_adamw_8bit unsupported (CUDA-only)
-    "KAGGLE_BF16":       "true",        # BF16 instead of FP16 (TPU native)
-    "KAGGLE_EPOCHS":     "3",
-}
+# ─── Hardware Detection (runs at import time — TPU checked first) ─────────────
+
+def _detect_hw() -> str:
+    """
+    Detects available training hardware. Checks TPU first, then GPU.
+    Returns: 'tpu' | 'gpu'
+    Raises RuntimeError if neither is available.
+    """
+    # 1. Check TPU first (torch_xla is pre-installed on Kaggle TPU)
+    try:
+        import torch_xla.core.xla_model as xm
+        xm.xla_device()          # raises if no TPU is actually present
+        print("[HW] ✓ TPU v5e-8 detected (torch_xla)")
+        return 'tpu'
+    except Exception:
+        pass
+
+    # 2. Check for CUDA GPU
+    try:
+        import torch
+        if torch.cuda.is_available():
+            name = torch.cuda.get_device_name(0)
+            print(f"[HW] ✓ GPU detected: {name}")
+            return 'gpu'
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "[HW] ✗ No TPU or GPU detected.\n"
+        "  This script requires one of:\n"
+        "    • Kaggle TPU v5e-8  (Settings → Accelerator → TPU v5e-8)\n"
+        "    • Kaggle T4 GPU     (Settings → Accelerator → GPU T4 x1)\n"
+        "  CPU-only training is not supported."
+    )
+
+
+HARDWARE: str = _detect_hw()   # 'tpu' or 'gpu' — used throughout this script
+
+
+# ─── Hardware-specific training overrides ────────────────────────────────────
+if HARDWARE == 'tpu':
+    # 8 chips × 16 GB HBM = 128 GB total. Full model fits in bf16, no QLoRA needed.
+    # Effective batch = 8 cores × 16 per-core = 128 per gradient update.
+    KAGGLE_ENV = {
+        "XLA_USE_BF16":      "1",           # Native BF16 on TPU
+        "KAGGLE_BATCH_SIZE": "16",          # Per-core (8 × 16 = 128 total)
+        "KAGGLE_GRAD_ACCUM": "1",           # No accumulation needed
+        "KAGGLE_OPTIM":      "adamw_torch", # paged_adamw_8bit is CUDA-only
+        "KAGGLE_BF16":       "true",
+        "KAGGLE_EPOCHS":     "3",
+    }
+else:  # gpu
+    # T4 has 16 GB VRAM. Use 4-bit QLoRA + paged optimizer for max throughput.
+    KAGGLE_ENV = {
+        "KAGGLE_BATCH_SIZE": "4",               # 4 per step on T4
+        "KAGGLE_GRAD_ACCUM": "4",               # Effective batch = 16
+        "KAGGLE_OPTIM":      "paged_adamw_8bit",# Needs bitsandbytes (CUDA)
+        "KAGGLE_FP16":       "true",
+        "KAGGLE_EPOCHS":     "3",
+    }
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -132,20 +181,21 @@ def _find_adapter() -> Path:
 
 def step1_install():
     print("\n" + "═"*60)
-    print("  STEP 1 — Installing Python dependencies (TPU v5e-8)")
+    print(f"  STEP 1 — Installing Python dependencies ({HARDWARE.upper()})")
     print("═"*60)
 
-    # ── Verify torch_xla (pre-installed on Kaggle TPU notebooks) ─────────────
-    try:
-        import torch_xla
-        print(f"[Step 1] ✓ torch_xla {torch_xla.__version__} already available")
-    except ImportError:
-        print("[Step 1] torch_xla not found — installing...")
-        _run([
-            sys.executable, "-m", "pip", "install", "-q",
-            "torch_xla[tpu]",
-            "-f", "https://storage.googleapis.com/libtpu-releases/index.html",
-        ])
+    if HARDWARE == 'tpu':
+        # torch_xla is pre-installed on Kaggle TPU notebooks
+        try:
+            import torch_xla
+            print(f"[Step 1] ✓ torch_xla {torch_xla.__version__} already available")
+        except ImportError:
+            print("[Step 1] torch_xla not found — installing...")
+            _run([
+                sys.executable, "-m", "pip", "install", "-q",
+                "torch_xla[tpu]",
+                "-f", "https://storage.googleapis.com/libtpu-releases/index.html",
+            ])
 
     # ── Phase 1: co-resolve the tightly coupled core libs ────────────────────
     # All four packages have strict inter-version constraints that MUST be
@@ -158,16 +208,21 @@ def step1_install():
         "trl>=0.11.0",
     ])
 
-    # ── Phase 2: remaining training deps (no bitsandbytes — CUDA-only) ───────
-    _pip(
+    # ── Phase 2: common deps + hardware-specific extras ───────────────────────
+    phase2 = [
         "accelerate>=0.34.0",
         "datasets>=3.0.0",
         "sentencepiece>=0.2.0",
         "huggingface-hub>=0.25.0",
         "scipy>=1.13.0",
         "tqdm>=4.66.0",
-    )
-    print("[Step 1] ✓ Dependencies installed")
+    ]
+    if HARDWARE == 'gpu':
+        # bitsandbytes required for 4-bit QLoRA — CUDA-only, skip on TPU
+        phase2.append("bitsandbytes>=0.43.0")
+
+    _pip(*phase2)
+    print(f"[Step 1] ✓ Dependencies installed ({HARDWARE.upper()})")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -213,15 +268,20 @@ def step3_download_data():
 
 def step4_train():
     print("\n" + "═"*60)
-    print("  STEP 4 — LoRA Fine-tuning on TPU v5e-8")
-    print("  Config: 8 cores × batch=16, grad_accum=1, bf16, adamw_torch")
-    print("  Expected time: ~30–60 minutes (128 effective batch size)")
+    if HARDWARE == 'tpu':
+        print("  STEP 4 — LoRA Fine-tuning on TPU v5e-8")
+        print("  Config: 8 cores × batch=16, grad_accum=1, bf16, adamw_torch")
+        print("  Expected time: ~30–60 minutes (128 effective batch size)")
+    else:
+        print("  STEP 4 — QLoRA Fine-tuning on GPU (T4 / RTX)")
+        print("  Config: batch=4, grad_accum=4, paged_adamw_8bit, fp16")
+        print("  Expected time: ~60–90 minutes")
     print("═"*60)
 
-    # Write a config patch that overrides settings for TPU v5e-8 before training starts
     patch_script = REPO_DIR / "_kaggle_config_patch.py"
-    patch_script.write_text(
-        """# Auto-generated by kaggle_train.py — patches config for Kaggle TPU v5e-8
+
+    if HARDWARE == 'tpu':
+        patch_content = """# Auto-generated by kaggle_train.py — TPU v5e-8 config
 import config, os
 from pathlib import Path
 
@@ -230,24 +290,41 @@ config.GRAD_ACCUMULATION_STEPS = int(os.environ.get("KAGGLE_GRAD_ACCUM", "1"))
 config.BF16_TRAINING           = os.environ.get("KAGGLE_BF16", "true") == "true"
 config.FP16_TRAINING           = False   # FP16 unsupported on TPU
 config.NUM_EPOCHS              = int(os.environ.get("KAGGLE_EPOCHS", "3"))
-config.MAX_SEQ_LENGTH          = 1024    # TPU has 128 GB HBM — can afford longer context
+config.MAX_SEQ_LENGTH          = 1024    # TPU has 128 GB HBM
 config.CHECKPOINTS_DIR = Path("/kaggle/working/checkpoints")
 config.LOGS_DIR        = Path("/kaggle/working/logs")
 config.CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
 config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-print("[KagglePatch] ✓ TPU v5e-8 optimized config applied.")
-""",
-        encoding="utf-8",
-    )
+print("[KagglePatch] ✓ TPU v5e-8 config applied (bf16, batch=16×8 cores).")
+"""
+    else:  # gpu
+        patch_content = """# Auto-generated by kaggle_train.py — GPU (T4) config
+import config, os
+from pathlib import Path
+
+config.BATCH_SIZE              = int(os.environ.get("KAGGLE_BATCH_SIZE", "4"))
+config.GRAD_ACCUMULATION_STEPS = int(os.environ.get("KAGGLE_GRAD_ACCUM", "4"))
+config.FP16_TRAINING           = os.environ.get("KAGGLE_FP16", "true") == "true"
+config.BF16_TRAINING           = False
+config.NUM_EPOCHS              = int(os.environ.get("KAGGLE_EPOCHS", "3"))
+config.CHECKPOINTS_DIR = Path("/kaggle/working/checkpoints")
+config.LOGS_DIR        = Path("/kaggle/working/logs")
+config.CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+print("[KagglePatch] ✓ GPU (T4) config applied (fp16, QLoRA, batch=4×4 grad_accum).")
+"""
+
+    patch_script.write_text(patch_content, encoding="utf-8")
 
     launcher = REPO_DIR / "_kaggle_train_launcher.py"
-    launcher.write_text(
-        """import sys
+
+    if HARDWARE == 'tpu':
+        launcher_content = """import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-import _kaggle_config_patch  # noqa — applies TPU overrides before train imports config
+import _kaggle_config_patch  # applies TPU config before train imports config
 
 try:
     import torch_xla.distributed.xla_multiprocessing as xmp
@@ -256,17 +333,28 @@ try:
         from train import main
         main()
 
-    print("[Launcher] Starting TPU training across 8 cores via xmp.spawn...")
+    print("[Launcher] TPU: starting training across 8 cores via xmp.spawn...")
     xmp.spawn(_mp_fn, nprocs=8, start_method='fork')
 
 except ImportError:
-    # Fallback: no XLA available, run in single-process mode (GPU/CPU)
-    print("[Launcher] torch_xla not found — running in single-process mode (GPU fallback)...")
+    print("[Launcher] torch_xla not found — falling back to single-process mode.")
     from train import main
     main()
-""",
-        encoding="utf-8",
-    )
+"""
+    else:  # gpu
+        launcher_content = """import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+import _kaggle_config_patch  # applies GPU config before train imports config
+
+print("[Launcher] GPU: starting QLoRA training in single-process mode...")
+from train import main
+main()
+"""
+
+    launcher.write_text(launcher_content, encoding="utf-8")
 
     _run(
         [sys.executable, "_kaggle_train_launcher.py"],
