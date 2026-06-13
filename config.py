@@ -2,9 +2,13 @@
 config.py — Central configuration for the multilingual chatbot.
 All hyperparameters, paths, and model IDs live here.
 
-Includes both:
-  - GPU Training settings (QLoRA on GTX 1650 Ti / Kaggle T4)
+Includes:
+  - TPU Training settings  (Standard LoRA + BF16 on Kaggle TPU v5e-8)
+  - GPU Training settings  (QLoRA + FP16 on GTX 1650 Ti — local fallback)
   - CPU Inference settings (GGUF Q4_K_M via llama-cpp-python)
+
+Note: Kaggle TPU patch (_kaggle_config_patch.py) overrides BATCH_SIZE,
+      GRAD_ACCUMULATION_STEPS, MAX_SEQ_LENGTH, and BF16_TRAINING at runtime.
 """
 
 import os
@@ -39,9 +43,12 @@ LORA_TARGET_MODULES = [
 ]
 
 # ─── Training Hyperparameters ─────────────────────────────────────────────────
-MAX_SEQ_LENGTH          = 512   # Keep short for 4GB VRAM
-BATCH_SIZE              = 1     # 1 per step on 4GB VRAM
-GRAD_ACCUMULATION_STEPS = 16    # Effective batch = 16
+# Defaults below are safe for local GPU (GTX 1650 Ti, 4GB VRAM).
+# Kaggle TPU v5e-8 patch overrides BATCH_SIZE, GRAD_ACCUMULATION_STEPS,
+# MAX_SEQ_LENGTH, FP16_TRAINING, and BF16_TRAINING at runtime.
+MAX_SEQ_LENGTH          = 512   # Local GPU default; TPU patch → 1024
+BATCH_SIZE              = 1     # Local GPU default; TPU patch → 16 per core
+GRAD_ACCUMULATION_STEPS = 16    # Local GPU default; TPU patch → 1
 LEARNING_RATE           = 2e-4
 NUM_EPOCHS              = 3
 WARMUP_RATIO            = 0.05
@@ -50,7 +57,8 @@ WEIGHT_DECAY            = 0.01
 SAVE_STEPS              = 200
 EVAL_STEPS              = 200
 LOGGING_STEPS           = 25
-FP16_TRAINING           = True  # GTX 1650 Ti supports FP16
+FP16_TRAINING           = True   # Local GPU (GTX 1650 Ti / T4); TPU patch → False
+BF16_TRAINING           = False  # TPU v5e-8 native format; Kaggle TPU patch → True
 
 # ─── Dataset Limits (adjust based on available time) ─────────────────────────
 MAX_ENGLISH_SAMPLES  = 8_000   # From ultrachat_200k

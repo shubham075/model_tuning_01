@@ -1,16 +1,18 @@
 """
-src/train.py — QLoRA fine-tuning loop for the multilingual chatbot.
+src/train.py — QLoRA / LoRA fine-tuning loop for the multilingual chatbot.
 
 Uses HuggingFace Trainer (not SFTTrainer) for full control over label masking.
-Supports GTX 1650 Ti (4GB VRAM) via:
-  - 4-bit NF4 quantization (bitsandbytes)
-  - LoRA adapters (only ~1% of params trainable)
-  - Gradient checkpointing (trades compute for memory)
-  - FP16 training
-  - Gradient accumulation (effective batch = 16)
 
-Run:
+Supported hardware (auto-detected):
+  - Kaggle TPU v5e-8  : bf16, standard LoRA, adamw_torch, 8 cores via xmp.spawn
+  - Kaggle T4 GPU     : fp16, QLoRA 4-bit, paged_adamw_8bit
+  - GTX 1650 Ti (local): fp16, QLoRA 4-bit, gradient accumulation
+
+Run (GPU/CPU locally):
   python src/train.py
+
+Run (TPU via Kaggle launcher):
+  Handled automatically by _kaggle_train_launcher.py via xmp.spawn
 """
 
 import sys
@@ -24,7 +26,7 @@ from config import (
     PROCESSED_DIR, CHECKPOINTS_DIR, LOGS_DIR,
     BATCH_SIZE, GRAD_ACCUMULATION_STEPS, LEARNING_RATE,
     NUM_EPOCHS, WARMUP_RATIO, LR_SCHEDULER_TYPE, WEIGHT_DECAY,
-    SAVE_STEPS, EVAL_STEPS, LOGGING_STEPS, FP16_TRAINING, MAX_SEQ_LENGTH,
+    SAVE_STEPS, EVAL_STEPS, LOGGING_STEPS, FP16_TRAINING, BF16_TRAINING, MAX_SEQ_LENGTH,
 )
 from model import load_for_training
 from dataset import MultilingualChatDataset, get_collate_fn
@@ -33,7 +35,24 @@ import torch
 from transformers import Trainer, TrainingArguments, EarlyStoppingCallback
 
 
+# ─── Hardware Detection ─────────────────────────────────────────────────────────────
+
+def _is_tpu() -> bool:
+    """Returns True if running on a Kaggle TPU (torch_xla available)."""
+    try:
+        import torch_xla.core.xla_model as xm
+        xm.xla_device()
+        return True
+    except Exception:
+        return False
+
+ON_TPU: bool = _is_tpu()
+
+
 def get_training_args() -> TrainingArguments:
+    # paged_adamw_8bit requires bitsandbytes (CUDA-only) — not available on TPU
+    optim = "adamw_torch" if ON_TPU else os.environ.get("KAGGLE_OPTIM", "adamw_torch")
+
     return TrainingArguments(
         output_dir=str(CHECKPOINTS_DIR),
         num_train_epochs=NUM_EPOCHS,
@@ -43,13 +62,13 @@ def get_training_args() -> TrainingArguments:
         per_device_eval_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUMULATION_STEPS,
 
-        # ── Memory savings ───────────────────────────────────────────────
+        # ── Precision & Memory ─────────────────────────────────────────────
         gradient_checkpointing=True,
-        fp16=FP16_TRAINING,
-        # adamw_torch works on all setups; switch to paged_adamw_8bit
-        # after: pip install bitsandbytes (already installed)
-        optim="adamw_torch",
-        dataloader_pin_memory=False,
+        fp16=FP16_TRAINING and not ON_TPU,  # FP16 on CUDA GPU only
+        bf16=BF16_TRAINING or ON_TPU,       # BF16 on TPU (native) or if explicitly set
+        no_cuda=ON_TPU,                     # Prevent Trainer from touching CUDA on TPU
+        optim=optim,
+        dataloader_pin_memory=False,        # Required for TPU; harmless on GPU
 
         # ── Learning rate ───────────────────────────────────────────────
         learning_rate=LEARNING_RATE,
@@ -62,7 +81,7 @@ def get_training_args() -> TrainingArguments:
         logging_steps=LOGGING_STEPS,
         save_steps=SAVE_STEPS,
         eval_steps=EVAL_STEPS,
-        eval_strategy="steps",          # transformers 5.x renamed evaluation_strategy
+        eval_strategy="steps",
         save_strategy="steps",
         save_total_limit=3,
         load_best_model_at_end=True,
@@ -86,8 +105,14 @@ def compute_metrics(eval_pred):
 
 def main():
     print("=" * 60)
-    print("  QLoRA Fine-tuning — Multilingual Chatbot")
-    print(f"  Device: {'CUDA (' + torch.cuda.get_device_name(0) + ')' if torch.cuda.is_available() else 'CPU'}")
+    print("  LoRA Fine-tuning — Multilingual Chatbot")
+    if ON_TPU:
+        import torch_xla.core.xla_model as xm
+        print(f"  Device: TPU ({xm.xla_device()}) — bf16, standard LoRA")
+    elif torch.cuda.is_available():
+        print(f"  Device: CUDA ({torch.cuda.get_device_name(0)}) — fp16, QLoRA")
+    else:
+        print("  Device: CPU (training not recommended)")
     print("=" * 60)
 
     # ── Load model & tokenizer ────────────────────────────────────────────────

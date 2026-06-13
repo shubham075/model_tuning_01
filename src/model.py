@@ -1,14 +1,15 @@
 """
-src/model.py — Model loading for training (QLoRA) and inference.
+src/model.py — Model loading for training (QLoRA / LoRA) and inference.
+
+Hardware auto-detection order:
+  1. TPU v5e-8  → BF16 + standard LoRA (no quantization; bitsandbytes is CUDA-only)
+  2. Modern GPU (Turing+, compute ≥7.0) → 4-bit NF4 QLoRA via bitsandbytes
+  3. Pascal GPU (compute <7.0, e.g. P100) → FP16 standard LoRA
 
 Inference strategy order:
   1. Base model 4-bit via bitsandbytes (~2GB VRAM)  ← confirmed working
   2. Base model FP16 split GPU+CPU                  (no quantization deps)
   3. Small 1.5B FP16 fully on GPU                   (last resort)
-
-To enable GPTQ (fastest, ~1.8GB VRAM) after gptqmodel is installed:
-  1. Install: VS Build Tools + pip install gptqmodel ninja
-  2. Uncomment the GPTQ block in load_for_inference() below
 """
 
 import sys
@@ -26,6 +27,30 @@ from config import (
 )
 
 SMALL_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
+
+
+# ─── Hardware Detection ───────────────────────────────────────────────────────────────────
+
+def _detect_hardware() -> str:
+    """
+    Returns one of: 'tpu' | 'gpu_modern' | 'gpu_pascal' | 'cpu'
+    - tpu        : Kaggle TPU v5e-8 (torch_xla available)
+    - gpu_modern : Turing+ GPU (compute ≥7.0, e.g. T4, A100) → QLoRA ok
+    - gpu_pascal : Pascal GPU  (compute <7.0, e.g. P100)     → FP16 LoRA only
+    - cpu        : No accelerator found
+    """
+    try:
+        import torch_xla.core.xla_model as xm
+        xm.xla_device()   # raises if no TPU present
+        return 'tpu'
+    except Exception:
+        pass
+
+    if torch.cuda.is_available():
+        major, _ = torch.cuda.get_device_capability(0)
+        return 'gpu_modern' if major >= 7 else 'gpu_pascal'
+
+    return 'cpu'
 
 
 # ─── Tokenizer ────────────────────────────────────────────────────────────────
@@ -53,22 +78,33 @@ def _bnb_4bit_config() -> BitsAndBytesConfig:
 # ─── Training ─────────────────────────────────────────────────────────────────
 
 def load_for_training():
-    """Returns (model, tokenizer) ready for fine-tuning."""
+    """Returns (model, tokenizer) ready for fine-tuning.
+    Auto-detects hardware and picks the right loading strategy:
+      - TPU v5e-8   → bf16 standard LoRA (bitsandbytes not supported on TPU)
+      - Modern GPU  → 4-bit NF4 QLoRA via bitsandbytes
+      - Pascal GPU  → FP16 standard LoRA
+    """
+    hw = _detect_hardware()
     tokenizer = load_tokenizer(BASE_MODEL_ID)
 
-    use_quantization = True
-    if torch.cuda.is_available():
-        # Pascal architecture (P100, GTX 1080 Ti, etc.) has compute capability 6.x.
-        # Turing (T4) is 7.5, Ampere (A100) is 8.x.
-        major, minor = torch.cuda.get_device_capability(0)
-        if major < 7:
-            print(f"[Model] Detected Pascal GPU ({torch.cuda.get_device_name(0)}).")
-            print("        Skipping 4-bit quantization to prevent bitsandbytes errors.")
-            print("        P100 has 16GB VRAM, which is sufficient for standard 16-bit LoRA.")
-            use_quantization = False
+    if hw == 'tpu':
+        # ── TPU v5e-8: bf16 standard LoRA (bitsandbytes is CUDA-only) ─────────
+        import torch_xla.core.xla_model as xm
+        device = xm.xla_device()
+        print(f"[Model] TPU v5e-8 detected — loading {BASE_MODEL_ID} in bf16")
+        print("        (No 4-bit quantization — bitsandbytes is CUDA-only)")
+        model = AutoModelForCausalLM.from_pretrained(
+            BASE_MODEL_ID,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
+        model = model.to(device)
+        model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
 
-    if use_quantization:
-        print(f"[Model] Loading {BASE_MODEL_ID} in 4-bit for QLoRA...")
+    elif hw == 'gpu_modern':
+        # ── Turing+ GPU (T4, A100, RTX): 4-bit NF4 QLoRA ─────────────────────
+        print(f"[Model] Modern GPU ({torch.cuda.get_device_name(0)}) — 4-bit QLoRA")
         model = AutoModelForCausalLM.from_pretrained(
             BASE_MODEL_ID,
             quantization_config=_bnb_4bit_config(),
@@ -77,17 +113,24 @@ def load_for_training():
             torch_dtype=torch.float16,
         )
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
-    else:
-        print(f"[Model] Loading {BASE_MODEL_ID} in FP16 for standard LoRA...")
+
+    elif hw == 'gpu_pascal':
+        # ── Pascal GPU (P100): FP16 LoRA, no quantization ─────────────────────
+        print(f"[Model] Pascal GPU ({torch.cuda.get_device_name(0)}) — FP16 LoRA")
         model = AutoModelForCausalLM.from_pretrained(
             BASE_MODEL_ID,
             device_map="auto",
             trust_remote_code=True,
             torch_dtype=torch.float16,
         )
-        # Enable gradient checkpointing and input gradients requirement for training
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
+
+    else:
+        raise RuntimeError(
+            "[Error] No supported training device found (TPU / GPU).\n"
+            "  CPU training is not supported — use Kaggle TPU v5e-8 or a GPU."
+        )
 
     lora_cfg = LoraConfig(
         r=LORA_R, lora_alpha=LORA_ALPHA,
