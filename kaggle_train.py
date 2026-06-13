@@ -251,14 +251,35 @@ def step3_download_data():
     print("\n" + "═"*60)
     print("  STEP 3 — Downloading training datasets")
     print("═"*60)
+
     processed_train = REPO_DIR / "data" / "processed" / "train.jsonl"
     if processed_train.exists():
         print("[Step 3] ✓ Data already downloaded, skipping.")
         return
-    _run(
-        [sys.executable, "chatbot_multilingual.py", "--mode", "download"],
-        cwd=REPO_DIR,
-    )
+
+    # ── Run download inline (NOT as subprocess) ───────────────────────────────
+    # ROOT CAUSE FIX: Calling chatbot_multilingual.py as a subprocess causes a
+    # fatal "PyGILState_Release" crash (exit -6 / SIGABRT) on Kaggle TPU.
+    # This is a known conflict between:
+    #   • datasets/pyarrow internal thread pools (created during streaming download)
+    #   • XLA/TPU runtime thread state
+    # When the subprocess finalizes, Python can't release GIL state for those
+    # C-extension threads, causing SIGABRT.
+    #
+    # Fix: import and call the download function directly in the same process.
+    # This avoids the subprocess fork entirely, preventing the GIL conflict.
+
+    # Disable tokenizer parallelism to prevent additional threading conflicts
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["HF_DATASETS_IN_MEMORY_MAX_SIZE"] = "0"  # stream, don't cache to RAM
+
+    import importlib.util
+    dl_script = REPO_DIR / "data" / "download_datasets.py"
+    spec = importlib.util.spec_from_file_location("download_datasets", dl_script)
+    dl_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dl_module)
+    dl_module.main()
+
     print("[Step 3] ✓ Datasets ready")
 
 
