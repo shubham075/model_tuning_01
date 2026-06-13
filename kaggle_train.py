@@ -345,25 +345,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-import _kaggle_config_patch  # applies TPU config before train imports config
-
-try:
-    import torch_xla.distributed.xla_multiprocessing as xmp
-
-    def _mp_fn(rank):
-        from train import main
-        main()
-
-    # nprocs=None  → PJRT auto-detects all available TPU devices (8 on v5e-8)
-    # nprocs=8 is rejected by the PJRT backend (ValueError: Unsupported nprocs)
-    # start_method='spawn' is required by PJRT; 'fork' is unsafe with XLA runtime
-    print("[Launcher] TPU: starting training via xmp.spawn (nprocs=None = all cores)...")
-    xmp.spawn(_mp_fn, nprocs=None, start_method='spawn')
-
-except ImportError:
-    print("[Launcher] torch_xla not found — falling back to single-process mode.")
+# _mp_fn must be defined at module level so it is picklable by spawn workers
+def _mp_fn(rank):
+    # Apply config patch INSIDE the worker — each spawned child needs it
+    import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
     from train import main
     main()
+
+if __name__ == '__main__':
+    # if __name__ == '__main__' guard is REQUIRED with start_method='spawn'.
+    # Without it, every spawned child re-imports this file and calls xmp.spawn
+    # again, causing a recursive BrokenProcessPool crash.
+    try:
+        import torch_xla.distributed.xla_multiprocessing as xmp
+        print("[Launcher] TPU: starting training via xmp.spawn (nprocs=None = all TPU cores)...")
+        xmp.spawn(_mp_fn, nprocs=None, start_method='spawn')
+    except ImportError:
+        print("[Launcher] torch_xla not found — falling back to single-process mode.")
+        import _kaggle_config_patch  # noqa
+        from train import main
+        main()
 """
     else:  # gpu
         launcher_content = """import sys
