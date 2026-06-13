@@ -62,6 +62,14 @@ import sys
 import time
 from pathlib import Path
 
+# Fix Kaggle TPU v5e-8 PJRT initialization conflict.
+# Kaggle sets TPU_PROCESS_ADDRESSES by default, which makes PyTorch XLA expect
+# a multi-host/multi-VM cluster. For single-host multi-core training (like
+# xmp.spawn), this causes "Expected 8 worker addresses, got 1" crash.
+# Unsetting this env var forces PJRT to initialize correctly in single-host mode.
+os.environ.pop("TPU_PROCESS_ADDRESSES", None)
+
+
 
 # ─── Paths (Kaggle filesystem) ────────────────────────────────────────────────
 WORKING        = Path("/kaggle/working")
@@ -364,6 +372,10 @@ print("[KagglePatch] ✓ GPU (T4) config applied (fp16, QLoRA, batch=4×4 grad_a
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+# Unset TPU_PROCESS_ADDRESSES so PJRT initializes in single-host mode.
+# Otherwise, it expects multiple hosts and crashes with "Expected 8 worker addresses, got 1".
+os.environ.pop("TPU_PROCESS_ADDRESSES", None)
 
 # Apply config patch in the parent launcher process before fork
 import _kaggle_config_patch  # noqa: sets BF16, batch size, etc.
