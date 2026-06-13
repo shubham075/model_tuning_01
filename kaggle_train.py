@@ -198,14 +198,22 @@ def step1_install():
             ])
 
     # ── Phase 1: co-resolve the tightly coupled core libs ────────────────────
-    # All four packages have strict inter-version constraints that MUST be
-    # resolved in a single pip call.
+    # IMPORTANT VERSION NOTES:
+    #   transformers>=4.47.0  — 4.47 is the first release that changed
+    #     huggingface-hub requirement from "<1.0" to "<2.0". Kaggle TPU has
+    #     huggingface-hub==1.19.0 pre-installed; older transformers crash with
+    #     "huggingface-hub>=0.34.0,<1.0 is required ... found 1.19.0".
+    #   tokenizers>=0.20.0    — upper cap removed; 4.47+ handles any recent
+    #     tokenizers version correctly.
+    #   huggingface-hub>=1.0  — explicitly request >=1.0 so pip keeps Kaggle's
+    #     pre-installed 1.19.0 instead of downgrading it.
     _run([
         sys.executable, "-m", "pip", "install", "-q",
         "peft>=0.14.0",
-        "transformers>=4.45.0",
-        "tokenizers>=0.20.0,<=0.23.0",
+        "transformers>=4.47.0",       # was >=4.45.0 — too old, required hub<1.0
+        "tokenizers>=0.20.0",         # removed <=0.23.0 cap — obsolete with 4.47+
         "trl>=0.11.0",
+        "huggingface-hub>=1.0",       # keep Kaggle's pre-installed 1.19.0
     ])
 
     # ── Phase 2: common deps + hardware-specific extras ───────────────────────
@@ -213,7 +221,6 @@ def step1_install():
         "accelerate>=0.34.0",
         "datasets>=3.0.0",
         "sentencepiece>=0.2.0",
-        "huggingface-hub>=0.25.0",
         "scipy>=1.13.0",
         "tqdm>=4.66.0",
     ]
