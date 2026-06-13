@@ -32,6 +32,14 @@ from model import load_for_training
 from dataset import MultilingualChatDataset, get_collate_fn
 
 import torch
+# Monkeypatch torch.xla to prevent 'AttributeError: module torch has no attribute xla'
+# when using activation/gradient checkpointing with PyTorch/XLA.
+try:
+    import torch_xla
+    torch.xla = torch_xla
+except ImportError:
+    pass
+
 from transformers import Trainer, TrainingArguments, EarlyStoppingCallback
 
 
@@ -73,6 +81,7 @@ def get_training_args() -> TrainingArguments:
 
         # ── Precision & Memory ─────────────────────────────────────────────
         gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": True} if ON_TPU else None,
         fp16=FP16_TRAINING and not ON_TPU,  # FP16 on CUDA GPU only
         bf16=BF16_TRAINING or ON_TPU,       # BF16 on TPU (native) or if explicitly set
         optim=optim,
