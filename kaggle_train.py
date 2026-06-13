@@ -610,6 +610,16 @@ def parse_args():
 
 
 def main():
+    # Forcefully release any TPU resource locks (/dev/vfio/*) from previous zombie runs
+    if HARDWARE == 'tpu':
+        print("[HW] Cleaning up any zombie processes holding the TPU resource locks...")
+        import subprocess
+        for i in range(4):  # TPU VM has multiple vfio files (usually /dev/vfio/0, 1, 2, 3)
+            try:
+                subprocess.run(["fuser", "-k", f"/dev/vfio/{i}"], capture_output=True)
+            except Exception:
+                pass
+
     args = parse_args()
 
     if not args.hf_token:
