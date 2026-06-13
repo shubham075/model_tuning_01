@@ -4,7 +4,7 @@ All hyperparameters, paths, and model IDs live here.
 
 Includes:
   - TPU Training settings  (Standard LoRA + BF16 on Kaggle TPU v5e-8)
-  - GPU Training settings  (QLoRA + FP16 on GTX 1650 Ti — local fallback)
+  - GPU Training settings  (QLoRA + FP16 on GTX 1650 Ti — local fallback/ currently -- kaggle T4 GPU)
   - CPU Inference settings (GGUF Q4_K_M via llama-cpp-python)
 
 Note: Kaggle TPU patch (_kaggle_config_patch.py) overrides BATCH_SIZE,
